@@ -18,7 +18,7 @@
             overflow: hidden; 
         }
         
-        .smooth-transition { transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .smooth-transition { transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
         .fade-in { animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(15px); }
@@ -86,7 +86,7 @@
         <div id="filterContainer" class="flex items-center gap-3"></div>
 
         <button onclick="clearAllFiltersGlobal()" class="ml-auto text-sm text-rose-500 hover:text-white font-medium smooth-transition flex items-center gap-2 bg-rose-50 px-4 py-2 rounded-lg hover:bg-rose-500 border border-rose-100 hover:border-rose-500 shadow-sm hover:shadow-md">
-            <i class="fas fa-eraser"></i> Xóa tất cả bộ lọc
+            <i class="fas fa-eraser"></i> Xóa bộ lọc
         </button>
     </div>
 
@@ -162,6 +162,7 @@ let charts = { donut: null, bar: null };
 
 Chart.register(ChartDataLabels);
 
+// Plugin vẽ chữ ở giữa hình Donut
 const centerTextPlugin = {
     id: 'centerText',
     beforeDraw: function(chart) {
@@ -180,21 +181,63 @@ const centerTextPlugin = {
         ctx.save();
     }
 };
-Chart.register(centerTextPlugin);
 
-// TÍCH HỢP PAPAPARSE: ĐỌC DỮ LIỆU CỰC CHUẨN XÁC, KHÔNG BAO GIỜ TRƯỢT CỘT
+// YÊU CẦU 1: PLUGIN VẼ TỔNG SỐ LÊN ĐỈNH CỘT
+const stackedTotalsPlugin = {
+    id: 'stackedTotals',
+    afterDatasetsDraw: (chart) => {
+        if (chart.config.type !== 'bar') return;
+        const { ctx, scales: { x, y } } = chart;
+        
+        ctx.save();
+        ctx.font = 'bold 12px "Segoe UI"'; // Font chữ
+        ctx.fillStyle = '#dc2626'; // Màu đỏ nổi bật
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+
+        // Lặp qua từng cột (Từng tổ)
+        chart.data.labels.forEach((label, i) => {
+            let total = 0;
+            let topY = y.bottom; 
+
+            // Tính tổng và tìm vị trí Y cao nhất của cột đó
+            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                const meta = chart.getDatasetMeta(datasetIndex);
+                if (!meta.hidden) {
+                    const val = dataset.data[i];
+                    if (val > 0) {
+                        total += val;
+                        // y càng nhỏ thì trên màn hình càng cao
+                        if (meta.data[i] && meta.data[i].y < topY) {
+                            topY = meta.data[i].y;
+                        }
+                    }
+                }
+            });
+
+            // Chỉ vẽ khi có dữ liệu (>0)
+            if (total > 0) {
+                // Đặt số cách đỉnh cột 4 pixel
+                ctx.fillText(total, x.getPixelForTick(i), topY - 4);
+            }
+        });
+        ctx.restore();
+    }
+};
+
+Chart.register(centerTextPlugin, stackedTotalsPlugin);
+
 function fetchData() {
     Papa.parse(CSV_URL, {
         download: true,
-        header: true,          // Tự động nhận diện dòng đầu tiên làm Header
-        skipEmptyLines: true,  // Bỏ qua các dòng trống hoàn toàn
+        header: true,         
+        skipEmptyLines: true,  
         complete: function(results) {
             const data = [];
             FILTER_FIELDS.forEach(f => activeFilters[f.key] = []);
 
             results.data.forEach(row => {
                 let obj = {};
-                // Chuẩn hóa data: Xóa khoảng trắng thừa ở tên cột và giá trị
                 for (let key in row) {
                     let cleanKey = key.trim();
                     let val = row[key] ? row[key].trim() : '';
@@ -202,7 +245,6 @@ function fetchData() {
                     obj[cleanKey] = val;
                 }
                 
-                // Lưu dòng nếu có bất kỳ dữ liệu nào hợp lệ
                 if (Object.values(obj).some(val => val !== '')) {
                     data.push(obj);
                 }
@@ -229,11 +271,15 @@ function buildFiltersUI() {
     FILTER_FIELDS.forEach((field) => {
         const uniqueValues = [...new Set(rawData.map(item => item[field.key]))].filter(val => val !== '' && val !== undefined).sort();
         
+        // Thêm ID cho button và text để dễ đổi màu khi có filter
         html += `
             <div class="relative group dropdown-wrapper" id="dropdown-wrapper-${field.key}">
-                <button onclick="toggleDropdown('${field.key}')" class="flex items-center justify-between w-40 px-3.5 py-2 bg-white border border-slate-200 hover:border-blue-400 rounded-lg text-sm font-semibold text-slate-600 hover:text-blue-600 focus:ring-4 focus:ring-blue-50 smooth-transition shadow-sm">
-                    <span class="truncate">${field.label}</span>
-                    <i class="fas fa-chevron-down text-[10px] ml-2 opacity-70"></i>
+                <button id="btn-filter-${field.key}" onclick="toggleDropdown('${field.key}')" class="flex items-center justify-between w-40 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 focus:ring-2 focus:ring-blue-100 smooth-transition shadow-sm truncate">
+                    <div class="flex items-center overflow-hidden">
+                        <span id="btn-text-${field.key}" class="truncate" title="${field.label}">${field.label}</span>
+                        <span id="btn-count-${field.key}" class="hidden ml-1.5 bg-white text-blue-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-sm leading-none flex items-center justify-center"></span>
+                    </div>
+                    <i class="fas fa-chevron-down text-[10px] ml-2 opacity-70 shrink-0"></i>
                 </button>
                 
                 <div id="dropdown-${field.key}" class="dropdown-panel absolute top-full left-0 mt-2 w-64 bg-white/95 backdrop-blur-xl border border-white rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col">
@@ -263,6 +309,38 @@ function buildFiltersUI() {
     });
 
     container.innerHTML = html;
+}
+
+// YÊU CẦU 2: HÀM CẬP NHẬT GIAO DIỆN BỘ LỌC (ĐỔI MÀU, HIỂN THỊ CHỮ)
+function updateFilterVisuals() {
+    FILTER_FIELDS.forEach(field => {
+        const btn = document.getElementById(`btn-filter-${field.key}`);
+        const textSpan = document.getElementById(`btn-text-${field.key}`);
+        const countBadge = document.getElementById(`btn-count-${field.key}`);
+        const selectedCount = activeFilters[field.key].length;
+
+        if (selectedCount > 0) {
+            // Đổi style thành màu Xanh để báo hiệu đang bật filter
+            btn.classList.remove('bg-white', 'text-slate-600', 'border-slate-200');
+            btn.classList.add('bg-blue-600', 'text-white', 'border-blue-700', 'shadow-md');
+            
+            // Xử lý text hiển thị
+            if (selectedCount === 1) {
+                textSpan.innerText = activeFilters[field.key][0]; // Hiển thị tên nếu chỉ chọn 1
+                countBadge.classList.add('hidden');
+            } else {
+                textSpan.innerText = field.label; // Nếu chọn nhiều thì hiển thị Label + Số lượng
+                countBadge.innerText = selectedCount;
+                countBadge.classList.remove('hidden');
+            }
+        } else {
+            // Trả về mặc định nếu không filter
+            btn.classList.add('bg-white', 'text-slate-600', 'border-slate-200');
+            btn.classList.remove('bg-blue-600', 'text-white', 'border-blue-700', 'shadow-md');
+            textSpan.innerText = field.label;
+            countBadge.classList.add('hidden');
+        }
+    });
 }
 
 function selectAllLocal(key) {
@@ -342,14 +420,15 @@ function updateDashboard() {
     });
 
     document.getElementById('totalWorkersCount').innerText = new Intl.NumberFormat('vi-VN').format(filteredData.length);
+    
+    // Gọi hàm cập nhật giao diện màu sắc bộ lọc
+    updateFilterVisuals();
 
     renderDonutChart(filteredData);
     renderStackedBarChart(filteredData);
 }
 
-// Cải tiến lấy tên tổ: PapaParse đã xử lý khoảng trắng, chỉ cần gọi đúng tên cột "Tên Tổ"
 function getExactTeamName(item) {
-    // Duyệt qua các key, tìm key nào chữ thường giống "tên tổ"
     const exactKey = Object.keys(item).find(key => key.toLowerCase() === 'tên tổ');
     if (exactKey && item[exactKey] && item[exactKey] !== '') {
         return item[exactKey];
@@ -360,7 +439,6 @@ function getExactTeamName(item) {
 function renderDonutChart(data) {
     const counts = {};
     data.forEach(item => {
-        // Tìm cột Joblevel an toàn hơn
         const jobKey = Object.keys(item).find(key => key.toLowerCase() === 'joblevel');
         if(jobKey && item[jobKey]) {
             let lvl = item[jobKey];
@@ -410,7 +488,6 @@ function renderStackedBarChart(data) {
     const teamsObj = {};
     data.forEach(item => {
         let team = getExactTeamName(item);
-        
         const jobKey = Object.keys(item).find(key => key.toLowerCase() === 'joblevel');
         let job = (jobKey && item[jobKey]) ? item[jobKey] : 'Khác';
         
@@ -422,7 +499,6 @@ function renderStackedBarChart(data) {
     const sortedTeams = Object.keys(teamsObj).sort((a, b) => teamsObj[b].total - teamsObj[a].total);
     document.getElementById('teamCountText').innerText = `Tổng cộng hiển thị: ${sortedTeams.length} Tổ`;
 
-    // Lọc lấy danh sách các Joblevel thực sự tồn tại, sau đó sắp xếp
     const jobKeyExists = Object.keys(data[0] || {}).find(key => key.toLowerCase() === 'joblevel');
     let activeJoblevels = [...new Set(data.map(item => item[jobKeyExists]).filter(Boolean))];
     activeJoblevels = customSortJoblevels(activeJoblevels);
@@ -438,7 +514,6 @@ function renderStackedBarChart(data) {
     });
 
     const container = document.getElementById('barChartContainer');
-    // Mỗi tổ cho 45px chiều ngang
     const minWidth = Math.max(container.parentElement.clientWidth, sortedTeams.length * 45); 
     container.style.width = `${minWidth}px`;
 
@@ -450,8 +525,8 @@ function renderStackedBarChart(data) {
         data: { labels: sortedTeams, datasets: datasets },
         options: {
             responsive: true, maintainAspectRatio: false,
-            // Nới rộng đáy thêm 30px để tên tổ dài không bị che
-            layout: { padding: { bottom: 30 } }, 
+            // Thêm padding top 25 để chứa con số tổng trên cùng, bottom 30 để hiện tên rỗ
+            layout: { padding: { top: 25, bottom: 30 } }, 
             animation: { duration: 1200, easing: 'easeOutQuart' },
             scales: {
                 x: { 
@@ -490,7 +565,6 @@ function renderStackedBarChart(data) {
     });
 }
 
-// Chạy fetchData khi load trang
 window.onload = fetchData;
 </script>
 </body>
